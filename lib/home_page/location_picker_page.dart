@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
 
 class LocationPickerPage extends StatefulWidget {
   const LocationPickerPage({super.key});
@@ -9,96 +11,147 @@ class LocationPickerPage extends StatefulWidget {
 }
 
 class _LocationPickerPageState extends State<LocationPickerPage> {
-  bool isManualInput = false;
-  final TextEditingController manualLocationController = TextEditingController();
+  GoogleMapController? _mapController;
+  LatLng? _pickedLatLng;
+  final TextEditingController _placeNameController = TextEditingController();
+  final TextEditingController _searchController = TextEditingController();
 
-  final List<String> locationList = [
-    '서울역', '강남역', '김포공항역', '작전역', '홍대입구역',
-  ];
+  List<Map<String, dynamic>> searchResults = [];
 
-  @override
-  void dispose() {
-    manualLocationController.dispose();
-    super.dispose();
-  }
 
-  void _selectLocation(String location) {
-    final url = 'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(location)}';
-    final geo = const GeoPoint(37.5665, 126.9780); // 기본 서울 좌표
-
-    Navigator.pop(context, {
-      'placeName': location,
-      'locationUrl': url,
-      'geoPoint': geo,
-    });
-  }
-
-  void _enableManualInput() {
-    setState(() => isManualInput = true);
-  }
-
-  void _submitManualInput() {
-    final input = manualLocationController.text.trim();
-    if (input.isNotEmpty) {
-      _selectLocation(input);
+  Future<void> _onSearchChanged(String keyword) async {
+    if (keyword.isEmpty) {
+      setState(() => searchResults = []);
+      return;
+    }
+    final url = Uri.parse(
+        'https://dapi.kakao.com/v2/local/search/keyword.json?query=$keyword');
+    final response = await http.get(
+      url,
+      headers: {'Authorization': 'KakaoAK a6050142a15e2e2ffc660c458f1eb4ff'},
+    );
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      setState(() {
+        searchResults = (data['documents'] as List)
+            .map((e) => {
+          'name': e['place_name'],
+          'lat': double.parse(e['y']),
+          'lng': double.parse(e['x']),
+          'address': e['road_address_name'] ?? e['address_name'],
+        })
+            .toList();
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('위치 선택'),
-        backgroundColor: Colors.lightBlue,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '주요 장소 선택',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+      appBar: AppBar(title: const Text('위치 선택')),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: "장소명 또는 주소로 검색",
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                prefixIcon: const Icon(Icons.search),
+              ),
+              onChanged: _onSearchChanged,
             ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              children: locationList.map((loc) => ActionChip(
-                label: Text(loc),
-                onPressed: () => _selectLocation(loc),
-              )).toList(),
+          ),
+          if (searchResults.isNotEmpty)
+            SizedBox(
+              height: 180,
+              child: ListView.builder(
+                itemCount: searchResults.length,
+                itemBuilder: (context, idx) {
+                  final res = searchResults[idx];
+                  return ListTile(
+                    title: Text(res['name']),
+                    subtitle: Text(res['address']),
+                    onTap: () {
+                      setState(() {
+                        _pickedLatLng = LatLng(res['lat'], res['lng']);
+                        _placeNameController.text = res['name'];
+                        searchResults = [];
+                        _searchController.text = res['name'];
+                      });
+                      _mapController?.animateCamera(
+                        CameraUpdate.newLatLng(_pickedLatLng!),
+                      );
+                    },
+                  );
+                },
+              ),
             ),
-            const SizedBox(height: 24),
-            if (!isManualInput) ...[
-              ElevatedButton.icon(
-                onPressed: _enableManualInput,
-                icon: const Icon(Icons.edit_location_alt),
-                label: const Text('직접 입력하기'),
+          Expanded(
+            child: GoogleMap(
+              initialCameraPosition: const CameraPosition(
+                target: LatLng(35.1796, 129.0756), // 부산 중심 좌표
+                zoom: 15,
               ),
-            ] else ...[
-              const Text(
-                '직접 위치 입력',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: manualLocationController,
-                decoration: const InputDecoration(
-                  hintText: '장소를 입력하세요 (예: 건대입구역)',
-                  border: OutlineInputBorder(),
+              onMapCreated: (controller) => _mapController = controller,
+              markers: _pickedLatLng == null
+                  ? {}
+                  : {
+                Marker(
+                  markerId: const MarkerId('picked'),
+                  position: _pickedLatLng!,
+                  draggable: true,
+                  onDragEnd: (newPos) {
+                    setState(() => _pickedLatLng = newPos);
+                  },
                 ),
-              ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerRight,
-                child: ElevatedButton(
-                  onPressed: _submitManualInput,
-                  child: const Text('선택 완료'),
+              },
+              onTap: (latLng) {
+                setState(() {
+                  _pickedLatLng = latLng;
+                });
+              },
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _placeNameController,
+                  decoration: const InputDecoration(
+                    labelText: '장소명 입력 (예: 스타벅스 서면점)',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
-              ),
-            ],
-          ],
-        ),
+                const SizedBox(height: 8),
+                if (_pickedLatLng != null)
+                  Text(
+                    '선택한 좌표: ${_pickedLatLng!.latitude}, ${_pickedLatLng!.longitude}',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                const SizedBox(height: 12),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.check),
+                  label: const Text('이 위치로 선택'),
+                  onPressed: (_pickedLatLng != null &&
+                      _placeNameController.text.isNotEmpty)
+                      ? () {
+                    Navigator.pop(context, {
+                      'name': _placeNameController.text,
+                      'lat': _pickedLatLng!.latitude,
+                      'lng': _pickedLatLng!.longitude,
+                      'url':
+                      'https://www.google.com/maps/search/?api=1&query=${_pickedLatLng!.latitude},${_pickedLatLng!.longitude}',
+                    });
+                  }
+                      : null,
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
