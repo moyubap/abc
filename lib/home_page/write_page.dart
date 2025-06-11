@@ -1,12 +1,12 @@
-// ✅ write_page.dart (전체 정상 작동 버전)
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../databaseSvc.dart';
+import '../home_page/location_picker_page.dart';
 
 class WritePage extends StatefulWidget {
   final RecruitPost? post;
@@ -27,10 +27,12 @@ class _WritePageState extends State<WritePage> {
   DateTime? selectedDate;
   TimeOfDay? selectedTime;
   String? selectedMealType;
+  int _selectedMaxParticipants = 2;
 
   final List<String> mealTypes = [
     '한식', '일식', '중식', '양식', '분식', '디저트', '패스트푸드',
   ];
+  final List<int> maxParticipantsOptions = List.generate(10, (index) => index + 1);
 
   @override
   void initState() {
@@ -46,6 +48,7 @@ class _WritePageState extends State<WritePage> {
       selectedDate = DateTime(meet.year, meet.month, meet.day);
       selectedTime = TimeOfDay(hour: meet.hour, minute: meet.minute);
       selectedMealType = post.foodType;
+      _selectedMaxParticipants = post.maxParticipants;
     }
   }
 
@@ -62,12 +65,18 @@ class _WritePageState extends State<WritePage> {
   }
 
   Future<void> _selectLocation() async {
-    final result = await Navigator.pushNamed(context, '/locationPicker');
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const LocationPickerPage()),
+    );
     if (result is Map<String, dynamic>) {
       setState(() {
-        selectedLocation = result['placeName'];
-        locationUrl = result['locationUrl'];
-        selectedGeoPoint = result['geoPoint'];
+        selectedLocation = result['placeName'] ?? result['name'];
+        locationUrl = result['locationUrl'] ?? result['url'];
+        selectedGeoPoint = result['geoPoint'] ??
+            (result['lat'] != null && result['lng'] != null
+                ? GeoPoint(result['lat'], result['lng'])
+                : null);
       });
     }
   }
@@ -90,101 +99,204 @@ class _WritePageState extends State<WritePage> {
     if (picked != null) setState(() => selectedTime = picked);
   }
 
+  String get formattedDate => selectedDate == null
+      ? '날짜 선택'
+      : '${selectedDate!.year}-${selectedDate!.month.toString().padLeft(2, '0')}-${selectedDate!.day.toString().padLeft(2, '0')}';
+
+  String get formattedTime => selectedTime == null
+      ? '시간 선택'
+      : '${selectedTime!.hour.toString().padLeft(2, '0')}:${selectedTime!.minute.toString().padLeft(2, '0')}';
+
   Future<void> _submitPost() async {
-    final uid = FirebaseAuth.instance.currentUser!.uid;
-    final postRef = widget.post == null
-        ? FirebaseFirestore.instance.collection('posts').doc()
-        : FirebaseFirestore.instance.collection('posts').doc(widget.post!.postId);
+    if (_titleController.text.isEmpty ||
+        _contentController.text.isEmpty ||
+        selectedMealType == null ||
+        selectedLocation == null ||
+        selectedGeoPoint == null ||
+        selectedDate == null ||
+        selectedTime == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('필수 항목을 모두 입력하세요.')),
+      );
+      return;
+    }
 
-    final postId = postRef.id;
-    final meetDateTime = DateTime(
-      selectedDate?.year ?? 0,
-      selectedDate?.month ?? 0,
-      selectedDate?.day ?? 0,
-      selectedTime?.hour ?? 0,
-      selectedTime?.minute ?? 0,
-    );
-    final imageUrl = await _uploadImage(postId);
+    try {
+      final uid = FirebaseAuth.instance.currentUser!.uid;
+      final postRef = widget.post == null
+          ? FirebaseFirestore.instance.collection('posts').doc()
+          : FirebaseFirestore.instance.collection('posts').doc(widget.post!.postId);
 
-    await postRef.set({
-      'title': _titleController.text,
-      'content': _contentController.text,
-      'foodType': selectedMealType,
-      'placeName': selectedLocation,
-      'location': selectedGeoPoint,
-      'meetTime': Timestamp.fromDate(meetDateTime),
-      'hostId': uid,
-      'createdAt': Timestamp.now(),
-      if (imageUrl != null) 'imageUrl': imageUrl,
-    }, SetOptions(merge: true));
+      final postId = postRef.id;
+      final meetDateTime = DateTime(
+        selectedDate!.year,
+        selectedDate!.month,
+        selectedDate!.day,
+        selectedTime!.hour,
+        selectedTime!.minute,
+      );
+      final imageUrl = await _uploadImage(postId);
 
-    if (context.mounted) Navigator.pop(context);
+      final data = {
+        'title': _titleController.text,
+        'content': _contentController.text,
+        'foodType': selectedMealType,
+        'placeName': selectedLocation,
+        'location': selectedGeoPoint,
+        'meetTime': Timestamp.fromDate(meetDateTime),
+        'hostId': uid,
+        'createdAt': Timestamp.now(),
+        'maxParticipants': _selectedMaxParticipants,
+        'genderLimit': 'any',
+        if (imageUrl != null) 'imageUrl': imageUrl,
+      };
+
+      if (widget.post == null) {
+        data['status'] = 'open';
+        data['participantIds'] = [uid];
+      }
+
+      await postRef.set(data, SetOptions(merge: true));
+      if (context.mounted) Navigator.pop(context);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('글 등록 실패: $e')),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final isEdit = widget.post != null;
     return Scaffold(
-      appBar: AppBar(title: const Text('모집글 작성')),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          TextField(controller: _titleController, decoration: const InputDecoration(labelText: '제목')),
-          const SizedBox(height: 12),
-          TextField(controller: _contentController, maxLines: 4, decoration: const InputDecoration(labelText: '내용')),
-          const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
-            value: selectedMealType,
-            hint: const Text('음식 종류 선택'),
-            items: mealTypes.map((type) => DropdownMenuItem(value: type, child: Text(type))).toList(),
-            onChanged: (val) => setState(() => selectedMealType = val),
+      backgroundColor: const Color(0xFFFFFEFC),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF81D4FA),
+        elevation: 0,
+        centerTitle: true,
+        title: Text(
+          isEdit ? '글 수정' : '글 쓰기',
+          style: const TextStyle(
+            fontFamily: 'UhBeeSe_hyun',
+            fontSize: 20,
+            color: Colors.white,
+            fontWeight: FontWeight.w600,
+            shadows: [Shadow(color: Colors.black26, blurRadius: 2, offset: Offset(0, 1))],
           ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: _pickDate,
-                  child: Text(selectedDate == null
-                      ? '날짜 선택'
-                      : '${selectedDate!.year}.${selectedDate!.month}.${selectedDate!.day}'),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: _pickTime,
-                  child: Text(selectedTime == null ? '시간 선택' : selectedTime!.format(context)),
-                ),
-              ),
-            ],
+        ),
+        leading: IconButton(
+          icon: const Icon(Icons.close, color: Colors.white),
+          onPressed: () => Navigator.pop(context),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {},
+            child: const Text(
+              '임시저장',
+              style: TextStyle(color: Colors.white, fontSize: 15),
+            ),
           ),
-          const SizedBox(height: 12),
-          ElevatedButton(onPressed: _selectLocation, child: const Text('장소 선택')),
-          if (selectedLocation != null && locationUrl != null)
-            TextButton(
-              onPressed: () async {
-                final uri = Uri.parse(locationUrl!);
-                if (await canLaunchUrl(uri)) {
-                  await launchUrl(uri);
-                } else {
-                  throw 'Could not launch $locationUrl';
-                }
-              },
-              child: Text(
-                selectedLocation!,
-                style: const TextStyle(decoration: TextDecoration.underline),
-              ),
-            ),
-          const SizedBox(height: 12),
-          ElevatedButton(onPressed: _pickImage, child: const Text('이미지 선택')),
-          if (_selectedImage != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Image.file(_selectedImage!, height: 200, fit: BoxFit.cover),
-            ),
-          const SizedBox(height: 20),
-          ElevatedButton(onPressed: _submitPost, child: const Text('등록하기')),
         ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: ListView(
+          children: [
+            TextField(
+              controller: _titleController,
+              decoration: const InputDecoration(hintText: '제목을 입력해주세요.'),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _contentController,
+              maxLines: 5,
+              decoration: const InputDecoration(hintText: '밥 친구들과 가볍게 얘기해보세요.'),
+            ),
+            const SizedBox(height: 16),
+            GestureDetector(
+              onTap: _pickImage,
+              child: Container(
+                height: 150,
+                decoration: BoxDecoration(
+                  color: Colors.grey[200],
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: _selectedImage == null
+                    ? const Center(child: Icon(Icons.link))
+                    : ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.file(_selectedImage!, fit: BoxFit.cover),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _pickDate,
+                    child: Text(formattedDate),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _pickTime,
+                    child: Text(formattedTime),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              value: selectedMealType,
+              decoration: const InputDecoration(labelText: '식사 종류 선택'),
+              items: mealTypes.map((type) => DropdownMenuItem(
+                value: type,
+                child: Text(type),
+              )).toList(),
+              onChanged: (value) => setState(() => selectedMealType = value),
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: _selectLocation,
+              icon: const Icon(Icons.place),
+              label: Text(selectedLocation ?? '위치를 선택해주세요'),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                const Text('모집 인원:'),
+                const SizedBox(width: 12),
+                DropdownButton<int>(
+                  value: _selectedMaxParticipants,
+                  items: maxParticipantsOptions
+                      .map((e) => DropdownMenuItem(value: e, child: Text('$e명')))
+                      .toList(),
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() {
+                        _selectedMaxParticipants = val;
+                      });
+                    }
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              onPressed: _submitPost,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blueAccent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Text('작성 완료', style: TextStyle(color: Colors.white, fontSize: 16)),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

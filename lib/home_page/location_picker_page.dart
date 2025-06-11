@@ -13,11 +13,7 @@ class _LocationPickerPageState extends State<LocationPickerPage> {
   final TextEditingController manualLocationController = TextEditingController();
 
   final List<String> locationList = [
-    '서울역',
-    '강남역',
-    '김포공항역',
-    '작전역',
-    '홍대입구역'
+    '서울역', '강남역', '김포공항역', '작전역', '홍대입구역',
   ];
 
   @override
@@ -38,9 +34,7 @@ class _LocationPickerPageState extends State<LocationPickerPage> {
   }
 
   void _enableManualInput() {
-    setState(() {
-      isManualInput = true;
-    });
+    setState(() => isManualInput = true);
   }
 
   void _submitManualInput() {
@@ -57,37 +51,54 @@ class _LocationPickerPageState extends State<LocationPickerPage> {
         title: const Text('위치 선택'),
         backgroundColor: Colors.lightBlue,
       ),
-      body: ListView(
+      body: Padding(
         padding: const EdgeInsets.all(16),
-        children: [
-          ...locationList.map(
-                (loc) => ListTile(
-              title: Text(loc),
-              onTap: () => _selectLocation(loc),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '주요 장소 선택',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
-          ),
-          ListTile(
-            title: const Text('직접입력'),
-            trailing: const Icon(Icons.edit),
-            onTap: _enableManualInput,
-          ),
-          if (isManualInput) ...[
-            const SizedBox(height: 12),
-            TextField(
-              controller: manualLocationController,
-              decoration: const InputDecoration(
-                labelText: '직접 입력할 위치',
-                border: OutlineInputBorder(),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: locationList.map((loc) => ActionChip(
+                label: Text(loc),
+                onPressed: () => _selectLocation(loc),
+              )).toList(),
+            ),
+            const SizedBox(height: 24),
+            if (!isManualInput) ...[
+              ElevatedButton.icon(
+                onPressed: _enableManualInput,
+                icon: const Icon(Icons.edit_location_alt),
+                label: const Text('직접 입력하기'),
               ),
-            ),
-            const SizedBox(height: 12),
-            ElevatedButton(
-              onPressed: _submitManualInput,
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.lightBlue),
-              child: const Text('위치 선택'),
-            ),
+            ] else ...[
+              const Text(
+                '직접 위치 입력',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: manualLocationController,
+                decoration: const InputDecoration(
+                  hintText: '장소를 입력하세요 (예: 건대입구역)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: ElevatedButton(
+                  onPressed: _submitManualInput,
+                  child: const Text('선택 완료'),
+                ),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
